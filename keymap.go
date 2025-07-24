@@ -38,6 +38,7 @@ type KeyMap struct {
 	GoBack              key.Binding
 	GoForward           key.Binding
 	Dig                 key.Binding
+	ParseJSON           key.Binding
 }
 
 var keyMap KeyMap
@@ -183,6 +184,10 @@ func init() {
 		Dig: key.NewBinding(
 			key.WithKeys("."),
 			key.WithHelp("", "dig"),
+		),
+		ParseJSON: key.NewBinding(
+			key.WithKeys("T"),
+			key.WithHelp("", "transform json string to fx view"),
 		),
 	}
 }

@@ -963,6 +963,9 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectNode(loc.node)
 		}
 
+	case key.Matches(msg, keyMap.ParseJSON):
+		return m.transformToJSON()
+
 	}
 	return m, nil
 }
