@@ -929,6 +929,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.commandInput.Focus()
 
 	case key.Matches(msg, keyMap.Search):
+		m.searchInput.SetValue("")
 		m.searchInput.CursorEnd()
 		m.searchInput.Width = m.termWidth - 2 // -1 for the prompt, -1 for the cursor
 		m.searchInput.Focus()
