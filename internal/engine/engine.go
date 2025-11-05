@@ -10,7 +10,7 @@ import (
 	"github.com/dop251/goja"
 
 	"github.com/antonmedv/fx/internal/jsonx"
-	"github.com/antonmedv/fx/internal/theme"
+	"github.com/antonmedv/fx/internal/pretty"
 )
 
 //go:embed stdlib.js
@@ -29,15 +29,17 @@ type Parser interface {
 	Recover() *jsonx.Node
 }
 
-func Start(
-	parser Parser,
-	args []string,
-	slurp bool,
-	writeOut, writeErr func(string),
-) int {
-	if slurp {
+type Options struct {
+	Slurp      bool
+	WithInline bool
+	WriteOut   func(string)
+	WriteErr   func(string)
+}
+
+func Start(parser Parser, args []string, opts Options) int {
+	if opts.Slurp {
 		var ok bool
-		parser, ok = Slurp(parser, writeErr)
+		parser, ok = Slurp(parser, opts.WriteErr)
 		if !ok {
 			return 1
 		}
@@ -49,22 +51,23 @@ func Start(
 	if isPrettyPrintArg {
 		for {
 			node, err := parser.Parse()
+
 			if err != nil {
 				if err == io.EOF {
 					break
 				}
-				writeErr(err.Error())
+				opts.WriteErr(err.Error())
 				return 1
 			}
 
 			if node.Kind == jsonx.String {
-				unquoted, err := strconv.Unquote(string(node.Value))
+				unquoted, err := strconv.Unquote(node.Value)
 				if err != nil {
 					panic(err)
 				}
-				writeOut(unquoted)
+				opts.WriteOut(unquoted)
 			} else {
-				writeOut(StringifyNode(node))
+				opts.WriteOut(pretty.Print(node, opts.WithInline))
 			}
 		}
 
@@ -76,7 +79,7 @@ func Start(
 			jsCode := transpile(args[i])
 			snippet := formatErr(args, i, jsCode)
 			message := errorToString(err)
-			writeErr(snippet + message)
+			opts.WriteErr(snippet + message)
 			return 1
 		}
 	}
@@ -89,9 +92,9 @@ func Start(
 	}
 	code.WriteString("  return json\n}\n")
 
-	vm := NewVM(writeOut)
+	vm := NewVM(opts.WriteOut)
 	if _, err := vm.RunString(code.String()); err != nil {
-		writeErr(errorToString(err))
+		opts.WriteErr(errorToString(err))
 		return 1
 	}
 
@@ -102,11 +105,16 @@ func Start(
 	echo := func(output goja.Value) {
 		rtype := output.ExportType()
 		if output.StrictEquals(undefined) {
-			writeErr("undefined")
+			opts.WriteErr("undefined")
 		} else if rtype != nil && rtype.Kind() == reflect.String {
-			writeOut(output.String())
+			opts.WriteOut(output.String())
 		} else {
-			writeOut(Stringify(output, vm, theme.CurrentTheme, 0))
+			jsonOut := Stringify(output, vm, 0)
+			nodeOut, err := jsonx.Parse([]byte(jsonOut))
+			if err != nil {
+				panic(err)
+			}
+			opts.WriteOut(pretty.Print(nodeOut, opts.WithInline))
 		}
 	}
 
@@ -116,14 +124,14 @@ func Start(
 			if err == io.EOF {
 				break
 			}
-			writeErr(err.Error())
+			opts.WriteErr(err.Error())
 			return 1
 		}
 
 		input := node.ToValue(vm)
 		output, err := main(goja.Undefined(), input)
 		if err != nil {
-			writeErr(errorToString(err))
+			opts.WriteErr(errorToString(err))
 			return 1
 		}
 

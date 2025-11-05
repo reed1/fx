@@ -31,16 +31,37 @@ import (
 	"github.com/antonmedv/fx/internal/jsonpath"
 	. "github.com/antonmedv/fx/internal/jsonx"
 	"github.com/antonmedv/fx/internal/theme"
+	"github.com/antonmedv/fx/internal/toml"
 	"github.com/antonmedv/fx/internal/utils"
 )
 
 var (
-	flagYaml   bool
-	flagRaw    bool
-	flagSlurp  bool
-	flagComp   bool
-	flagStrict bool
+	flagYaml     bool
+	flagToml     bool
+	flagRaw      bool
+	flagSlurp    bool
+	flagComp     bool
+	flagStrict   bool
+	flagNoInline bool
 )
+
+var flags = []string{
+	"--help",
+	"--raw",
+	"--slurp",
+	"--themes",
+	"--version",
+	"--yaml",
+	"--toml",
+	"--strict",
+	"--no-inline",
+}
+
+func init() {
+	for _, name := range flags {
+		complete.Flags = append(complete.Flags, complete.Reply{name, name, "flag"})
+	}
+}
 
 func main() {
 	if _, ok := os.LookupEnv("FX_PPROF"); ok {
@@ -88,6 +109,8 @@ func main() {
 			return
 		case "--yaml":
 			flagYaml = true
+		case "--toml":
+			flagToml = true
 		case "--raw", "-r":
 			flagRaw = true
 		case "--slurp", "-s":
@@ -97,13 +120,22 @@ func main() {
 			flagSlurp = true
 		case "--strict":
 			flagStrict = true
+		case "--no-inline":
+			flagNoInline = true
+		case "--game-of-life":
+			utils.GameOfLife()
+			return
 		default:
 			args = append(args, arg)
 		}
 	}
 
-	if flagYaml && flagRaw {
-		println("Error: can't use both --yaml and --raw flags together")
+	if (flagYaml || flagToml) && flagRaw {
+		println("Error: can't use --yaml/--toml and --raw flags together")
+		os.Exit(1)
+	}
+	if flagYaml && flagToml {
+		println("Error: can't use both --yaml and --toml flags together")
 		os.Exit(1)
 	}
 
@@ -137,7 +169,7 @@ func main() {
 		} else {
 			// $ fx file.json arg*
 			filePath := args[0]
-			src = open(filePath, &flagYaml)
+			src = open(filePath, &flagYaml, &flagToml)
 			engine.FilePath = filePath
 			fileName = filepath.Base(filePath)
 			args = args[1:]
@@ -161,6 +193,18 @@ func main() {
 			return
 		}
 		parser = NewJsonParser(bytes.NewReader(jsonBytes), flagStrict)
+	} else if flagToml {
+		b, err := io.ReadAll(src)
+		if err != nil {
+			panic(err)
+		}
+		jsonBytes, err := toml.ToJSON(b)
+		if err != nil {
+			fmt.Print(err.Error())
+			os.Exit(1)
+			return
+		}
+		parser = NewJsonParser(bytes.NewReader(jsonBytes), flagStrict)
 	} else if flagRaw {
 		parser = NewLineParser(src)
 	} else {
@@ -168,9 +212,13 @@ func main() {
 	}
 
 	if len(args) > 0 || flagSlurp {
-		writeOut := func(s string) { fmt.Println(s) }
-		writeErr := func(s string) { fmt.Fprintln(os.Stderr, s) }
-		exitCode := engine.Start(parser, args, flagSlurp, writeOut, writeErr)
+		opts := engine.Options{
+			Slurp:      flagSlurp,
+			WithInline: !flagNoInline,
+			WriteOut:   func(s string) { fmt.Println(s) },
+			WriteErr:   func(s string) { fmt.Fprintln(os.Stderr, s) },
+		}
+		exitCode := engine.Start(parser, args, opts)
 		if exitCode != 0 {
 			os.Exit(exitCode)
 		}
@@ -318,6 +366,7 @@ type model struct {
 	keysIndex             []string
 	keysIndexNodes        []*Node
 	fuzzyMatch            *fuzzy.Match
+	deletePending         bool
 }
 
 type location struct {
@@ -390,7 +439,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.top = msg.node
 			m.bottom = msg.node
 		} else {
-			scrollToBottom := m.cursorPointsTo() == m.bottom.Bottom()
+			to, ok := m.cursorPointsTo()
+			if !ok {
+				return m, nil
+			}
+			scrollToBottom := to == m.bottom.Bottom()
 			msg.node.Index = -1 // To fix the statusbar path (to show .key instead of [0].key).
 			m.bottom.Adjacent(msg.node)
 			m.bottom = msg.node
@@ -408,6 +461,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		m.handlePendingDelete(msg)
+
 		switch {
 		case msg.Button == tea.MouseButtonWheelUp:
 			m.up()
@@ -420,8 +475,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showCursor = true
 			if msg.Y < m.viewHeight() {
 				if m.cursor == msg.Y {
-					to := m.cursorPointsTo()
-					if to != nil {
+					to, ok := m.cursorPointsTo()
+					if ok {
 						if to.IsCollapsed() {
 							to.Expand()
 						} else {
@@ -669,6 +724,11 @@ func (m *model) handleYankKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = clipboard.WriteAll(m.cursorKey())
 	case key.Matches(msg, yankValueY, yankValueV):
 		_ = clipboard.WriteAll(m.cursorValue())
+	case key.Matches(msg, yankKeyValue):
+		k := m.cursorKey()
+		v := m.cursorValue()
+		keyValue := k + ": " + v
+		_ = clipboard.WriteAll(keyValue)
 	}
 	m.yank = false
 	return m, nil
@@ -686,7 +746,23 @@ func (m *model) handleShowSelectorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) handlePendingDelete(msg tea.Msg) {
+	// Handle potential 'dd' sequence for delete
+	if m.deletePending {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			if key.Matches(keyMsg, keyMap.Delete) {
+				m.deleteAtCursor()
+				m.deletePending = true
+				return
+			}
+		}
+		m.deletePending = false
+	}
+}
+
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.handlePendingDelete(msg)
+
 	switch {
 	case key.Matches(msg, keyMap.Suspend):
 		m.suspending = true
@@ -741,7 +817,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recordHistory()
 
 	case key.Matches(msg, keyMap.NextSibling):
-		pointsTo := m.cursorPointsTo()
+		pointsTo, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		var nextSibling *Node
 		if pointsTo.End != nil && pointsTo.End.Next != nil {
 			nextSibling = pointsTo.End.Next
@@ -756,7 +835,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recordHistory()
 
 	case key.Matches(msg, keyMap.PrevSibling):
-		pointsTo := m.cursorPointsTo()
+		pointsTo, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		var prevSibling *Node
 		parent := pointsTo.Parent
 		if parent != nil && parent.End == pointsTo {
@@ -776,8 +858,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recordHistory()
 
 	case key.Matches(msg, keyMap.Collapse):
-		n := m.cursorPointsTo()
-		if n == nil {
+		n, ok := m.cursorPointsTo()
+		if !ok {
 			return m, nil
 		}
 		if n.HasChildren() && !n.IsCollapsed() {
@@ -791,26 +873,36 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recordHistory()
 
 	case key.Matches(msg, keyMap.Expand):
-		m.cursorPointsTo().Expand()
+		n, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
+		n.Expand()
 		m.showCursor = true
 
 	case key.Matches(msg, keyMap.CollapseRecursively):
-		n := m.cursorPointsTo()
+		n, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		if n.HasChildren() {
 			n.CollapseRecursively()
 		}
 		m.showCursor = true
 
 	case key.Matches(msg, keyMap.ExpandRecursively):
-		n := m.cursorPointsTo()
+		n, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		if n.HasChildren() {
 			n.ExpandRecursively(0, math.MaxInt)
 		}
 		m.showCursor = true
 
 	case key.Matches(msg, keyMap.CollapseAll):
-		at := m.cursorPointsTo()
-		if at != nil {
+		at, ok := m.cursorPointsTo()
+		if ok {
 			m.collapsed = true
 			n := m.top
 			for n != nil {
@@ -828,7 +920,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keyMap.ExpandAll):
-		at := m.cursorPointsTo()
+		at, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		m.collapsed = false
 		n := m.top
 		for n != nil {
@@ -842,8 +937,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectNode(at)
 
 	case key.Matches(msg, keyMap.CollapseLevel):
-		at := m.cursorPointsTo()
-		if at != nil && at.HasChildren() {
+		at, ok := m.cursorPointsTo()
+		if ok && at.HasChildren() {
 			toLevel, _ := strconv.Atoi(msg.String())
 			at.CollapseRecursively()
 			at.ExpandRecursively(0, toLevel)
@@ -851,7 +946,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keyMap.ToggleWrap):
-		at := m.cursorPointsTo()
+		at, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		m.wrap = !m.wrap
 		if m.wrap {
 			Wrap(m.top, m.viewWidth())
@@ -894,7 +992,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.open()
 
 	case key.Matches(msg, keyMap.Dig):
-		at := m.cursorPointsTo()
+		at, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		if at.Kind == Err {
 			nextJson := at.FindNextNonErr()
 			if nextJson != nil {
@@ -913,7 +1014,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.createKeysIndex()
 
 	case key.Matches(msg, keyMap.GotoRef):
-		at := m.cursorPointsTo()
+		at, ok := m.cursorPointsTo()
+		if !ok {
+			return m, nil
+		}
 		value, isRef := isRefNode(at)
 		if isRef {
 			refPath, ok := jsonpath.ParseSchemaRef(value)
@@ -944,7 +1048,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keyMap.GoBack):
 		if m.locationIndex > 0 {
-			at := m.cursorPointsTo()
+			at, ok := m.cursorPointsTo()
+			if !ok {
+				return m, nil
+			}
 			m.locationIndex--
 
 			loc := m.locationHistory[m.locationIndex]
@@ -967,6 +1074,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keyMap.ParseJSON):
 		return m.transformToJSON()
 
+	case key.Matches(msg, keyMap.Delete):
+		m.deletePending = true
 	}
 	return m, nil
 }
@@ -991,8 +1100,8 @@ func (m *model) down() {
 	}
 	m.showCursor = true
 	m.cursor++
-	n := m.cursorPointsTo()
-	if n == nil {
+	_, ok := m.cursorPointsTo()
+	if !ok {
 		m.cursor--
 		return
 	}
@@ -1005,8 +1114,8 @@ func (m *model) down() {
 }
 
 func (m *model) recordHistory() {
-	at := m.cursorPointsTo()
-	if at == nil {
+	at, ok := m.cursorPointsTo()
+	if !ok {
 		return
 	}
 	if at.Chunk != "" && at.Value == "" {
@@ -1073,6 +1182,9 @@ func (m *model) scrollBackward(lines int) {
 }
 
 func (m *model) scrollForward(lines int) {
+	if m.head == nil {
+		return
+	}
 	it := m.head
 	for it.Next != nil {
 		it = it.Next
@@ -1108,7 +1220,7 @@ func (m *model) prettyKey(node *Node, selected bool) []byte {
 	}
 }
 
-func (m *model) prettyPrint(node *Node, selected bool) string {
+func (m *model) prettyPrint(node *Node, isSelected, isRef bool) string {
 	var s string
 	if node.Chunk != "" {
 		s = node.Chunk
@@ -1117,14 +1229,24 @@ func (m *model) prettyPrint(node *Node, selected bool) string {
 	}
 
 	if len(s) == 0 {
-		if selected {
+		if isSelected {
 			return theme.CurrentTheme.Cursor(" ")
 		} else {
 			return s
 		}
 	}
 
-	style := theme.Value(node.Kind, selected)
+	var style theme.Color
+
+	if isSelected {
+		style = theme.CurrentTheme.Cursor
+	} else {
+		style = theme.Value(node.Kind)
+	}
+
+	if isRef {
+		style = theme.CurrentTheme.Ref
+	}
 
 	if indexes, ok := m.search.values[node]; ok {
 		var out strings.Builder
@@ -1171,8 +1293,9 @@ func (m *model) viewHeight() int {
 	return m.termHeight - 1
 }
 
-func (m *model) cursorPointsTo() *Node {
-	return m.at(m.cursor)
+func (m *model) cursorPointsTo() (*Node, bool) {
+	n := m.at(m.cursor)
+	return n, n != nil
 }
 
 func (m *model) at(pos int) *Node {
@@ -1218,6 +1341,9 @@ func (m *model) selectNodeInView(n *Node) {
 }
 
 func (m *model) selectNode(n *Node) {
+	if n == nil {
+		return
+	}
 	m.showCursor = true
 	if m.nodeInsideView(n) {
 		m.selectNodeInView(n)
@@ -1225,19 +1351,24 @@ func (m *model) selectNode(n *Node) {
 	} else {
 		m.cursor = 0
 		m.head = n
-		m.scrollIntoView()
+		{
+			parent := n.Parent
+			for parent != nil {
+				parent.Expand()
+				parent = parent.Parent
+			}
+		}
 		m.centerLine(n)
-	}
-	parent := n.Parent
-	for parent != nil {
-		parent.Expand()
-		parent = parent.Parent
+		m.scrollIntoView()
 	}
 }
 
 func (m *model) cursorPath() string {
+	at, ok := m.cursorPointsTo()
+	if !ok {
+		return ""
+	}
 	path := ""
-	at := m.cursorPointsTo()
 	for at != nil {
 		if at.Prev != nil {
 			if at.Chunk != "" && at.Value == "" {
@@ -1261,8 +1392,8 @@ func (m *model) cursorPath() string {
 }
 
 func (m *model) cursorValue() string {
-	at := m.cursorPointsTo()
-	if at == nil {
+	at, ok := m.cursorPointsTo()
+	if !ok {
 		return ""
 	}
 	parent := at.Parent
@@ -1321,8 +1452,8 @@ func (m *model) cursorValue() string {
 }
 
 func (m *model) cursorKey() string {
-	at := m.cursorPointsTo()
-	if at == nil {
+	at, ok := m.cursorPointsTo()
+	if !ok {
 		return ""
 	}
 	if at.IsWrap() {
@@ -1342,8 +1473,8 @@ func (m *model) findByPath(path []any) *Node {
 }
 
 func (m *model) currentTopNode() *Node {
-	at := m.cursorPointsTo()
-	if at == nil {
+	at, ok := m.cursorPointsTo()
+	if !ok {
 		return nil
 	}
 	for at.Parent != nil {
@@ -1458,8 +1589,8 @@ func (m *model) redoSearch() {
 }
 
 func (m *model) createKeysIndex() {
-	at := m.cursorPointsTo()
-	if at == nil {
+	at, ok := m.cursorPointsTo()
+	if !ok {
 		return
 	}
 	root := at.Root()
@@ -1522,8 +1653,8 @@ func (m *model) open() tea.Cmd {
 		engine.FilePath,
 	)
 	if command[0] == "vi" || command[0] == "vim" {
-		at := m.cursorPointsTo()
-		if at != nil {
+		at, ok := m.cursorPointsTo()
+		if ok {
 			tail := command[1:]
 			command = append([]string{command[0]}, fmt.Sprintf("+%d", at.LineNumber))
 			command = append(command, tail...)
@@ -1533,4 +1664,16 @@ func (m *model) open() tea.Cmd {
 	return tea.ExecProcess(execCmd, func(err error) tea.Msg {
 		return nil
 	})
+}
+
+// deleteAtCursor deletes the current key/value (node) from the view structure.
+func (m *model) deleteAtCursor() {
+	at, ok := m.cursorPointsTo()
+	if !ok || at == nil {
+		return
+	}
+	if next, ok := DeleteNode(at); ok {
+		m.selectNode(next)
+		m.recordHistory()
+	}
 }

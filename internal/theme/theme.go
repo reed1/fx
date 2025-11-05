@@ -32,31 +32,28 @@ type Theme struct {
 
 type Color func(s string) string
 
-func Value(kind jsonx.Kind, selected bool) Color {
-	if selected {
-		return CurrentTheme.Cursor
-	} else {
-		switch kind {
-		case jsonx.String:
-			return CurrentTheme.String
-		case jsonx.Bool:
-			return CurrentTheme.Boolean
-		case jsonx.Null:
-			return CurrentTheme.Null
-		case jsonx.Object, jsonx.Array:
-			return CurrentTheme.Syntax
-		case jsonx.Number:
-			return CurrentTheme.Number
-		case jsonx.NaN:
-			return CurrentTheme.Error
-		case jsonx.Infinity:
-			return CurrentTheme.Error
-		case jsonx.Undefined:
-			return CurrentTheme.Error
-		default:
-			return noColor
-		}
+func Value(kind jsonx.Kind) Color {
+	switch kind {
+	case jsonx.String:
+		return CurrentTheme.String
+	case jsonx.Bool:
+		return CurrentTheme.Boolean
+	case jsonx.Null:
+		return CurrentTheme.Null
+	case jsonx.Object, jsonx.Array:
+		return CurrentTheme.Syntax
+	case jsonx.Number:
+		return CurrentTheme.Number
+	case jsonx.NaN:
+		return CurrentTheme.Error
+	case jsonx.Infinity:
+		return CurrentTheme.Error
+	case jsonx.Undefined:
+		return CurrentTheme.Error
+	default:
+		return noColor
 	}
+
 }
 
 var (
@@ -269,6 +266,22 @@ var themes = map[string]Theme{
 		LineNumber: defaultLineNumber,
 		Error:      defaultError,
 	},
+	"9": {
+		Cursor:     defaultCursor,
+		Syntax:     noColor,
+		Preview:    defaultPreview,
+		StatusBar:  defaultStatusBar,
+		Search:     defaultSearch,
+		Key:        boldFg("39"), // deep sky blue
+		String:     fg("49"),     // spring green 2
+		Null:       defaultNull,
+		Boolean:    fg("205"), // hot pink
+		Number:     fg("220"), // gold
+		Size:       defaultSize,
+		Ref:        underlineFg("49"),
+		LineNumber: defaultLineNumber,
+		Error:      defaultError,
+	},
 	"🔵": {
 		Cursor: toColor(lipgloss.NewStyle().
 			Foreground(lipgloss.Color("15")).
@@ -301,6 +314,38 @@ var themes = map[string]Theme{
 		Number:     fg("226"),
 		Size:       defaultSize,
 		Ref:        underlineFg("82"),
+		LineNumber: defaultLineNumber,
+		Error:      defaultError,
+	},
+	"🔥": {
+		Cursor:     defaultCursor,
+		Syntax:     boldFg("208"),
+		Preview:    defaultPreview,
+		StatusBar:  defaultStatusBar,
+		Search:     defaultSearch,
+		Key:        boldFg("202"),
+		String:     fg("214"),
+		Null:       defaultNull,
+		Boolean:    fg("196"),
+		Number:     fg("202"),
+		Size:       defaultSize,
+		Ref:        underlineFg("214"),
+		LineNumber: defaultLineNumber,
+		Error:      defaultError,
+	},
+	"🟣": {
+		Cursor:     defaultCursor,
+		Syntax:     noColor,
+		Preview:    defaultPreview,
+		StatusBar:  defaultStatusBar,
+		Search:     defaultSearch,
+		Key:        boldFg("141"), // orchid
+		String:     fg("183"),     // light pink/purple
+		Null:       defaultNull,
+		Boolean:    fg("81"),  // cyan
+		Number:     fg("219"), // light magenta
+		Size:       defaultSize,
+		Ref:        underlineFg("183"),
 		LineNumber: defaultLineNumber,
 		Error:      defaultError,
 	},

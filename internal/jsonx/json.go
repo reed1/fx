@@ -6,6 +6,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/antonmedv/fx/internal/utils"
 )
@@ -21,6 +22,7 @@ type JsonParser struct {
 	lineNumber     int
 	realLineNumber int
 	depth          uint8
+	count          int
 }
 
 func Parse(b []byte) (*Node, error) {
@@ -45,15 +47,19 @@ func NewJsonParser(rd io.Reader, strict bool) *JsonParser {
 }
 
 func (p *JsonParser) Parse() (node *Node, err error) {
-	if p.eof {
-		return nil, io.EOF
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			err = p.errorSnippet(fmt.Sprintf("%v", r))
 		}
 	}()
-	node = p.parseValue()
+	if p.count > 0 {
+		p.skipWhitespace()
+	}
+	if p.eof {
+		return nil, io.EOF
+	}
+	node = p.parseValue(true)
+	p.count++
 	return
 }
 
@@ -146,7 +152,7 @@ func (p *JsonParser) lineNumberPlusPlus() int {
 	return n
 }
 
-func (p *JsonParser) parseValue() *Node {
+func (p *JsonParser) parseValue(root bool) *Node {
 	p.skipWhitespace()
 
 	var l *Node
@@ -180,7 +186,12 @@ func (p *JsonParser) parseValue() *Node {
 		panic(fmt.Sprintf("Unexpected character %q", p.char))
 	}
 
-	p.skipWhitespace()
+	// Skip whitespace will block parseValue (with io.Read in refill func),
+	// as soon as we parsed the root value, return and ignore remining whitespaces.
+	if !root {
+		p.skipWhitespace()
+	}
+
 	return l
 }
 
@@ -199,33 +210,35 @@ func (p *JsonParser) scanString() string {
 	escaped := false
 	for {
 		if escaped {
-			switch p.char {
-			case 'u':
-				var unicode string
-				for i := 0; i < 4; i++ {
-					p.next()
-					if !utils.IsHexDigit(p.char) {
-						panic(fmt.Sprintf("Invalid Unicode escape sequence '\\u%s%c'", unicode, p.char))
-					}
-					unicode += string(p.char)
-				}
-				_, err := strconv.ParseInt(unicode, 16, 32)
-				if err != nil {
-					panic(fmt.Sprintf("Invalid Unicode escape sequence '\\u%s'", unicode))
-				}
-			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
-			default:
-				panic(fmt.Sprintf("Invalid escape sequence '\\%c'", p.char))
-			}
 			escaped = false
+			if p.strict {
+				switch p.char {
+				case 'u':
+					var s string
+					for i := 0; i < 4; i++ {
+						p.next()
+						if !utils.IsHexDigit(p.char) {
+							panic(fmt.Sprintf("Invalid Unicode escape sequence '\\u%s%c'", s, p.char))
+						}
+						s += string(p.char)
+					}
+					_, err := strconv.ParseInt(s, 16, 32)
+					if err != nil {
+						panic(fmt.Sprintf("Invalid Unicode escape sequence '\\u%s'", s))
+					}
+				case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				default:
+					panic(fmt.Sprintf("Invalid escape sequence '\\%c'", p.char))
+				}
+			}
 		} else if p.char == '\\' {
 			escaped = true
 		} else if p.char == '"' {
 			break
 		} else if p.char == 0 {
 			panic("Unexpected end of input in string")
-		} else if p.char < 0x1F {
-			panic(fmt.Sprintf("Invalid character %q in string", p.char))
+		} else if rune(p.char) > unicode.MaxRune {
+			panic(fmt.Sprintf("Invalid character code point %d in string", p.char))
 		}
 		p.next()
 	}
@@ -335,7 +348,7 @@ func (p *JsonParser) parseObject() *Node {
 		p.next()
 
 		p.depth++
-		value := p.parseValue()
+		value := p.parseValue(false)
 		value.Key = keyBytes
 		value.Parent = object
 		p.depth--
@@ -398,7 +411,7 @@ func (p *JsonParser) parseArray() *Node {
 
 	for i := 0; ; i++ {
 		p.depth++
-		value := p.parseValue()
+		value := p.parseValue(false)
 		value.Parent = arr
 		arr.Size += 1
 		value.Index = i

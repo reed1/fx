@@ -187,21 +187,26 @@ func (n *Node) FindByPath(path []any) *Node {
 		}
 		switch part := part.(type) {
 		case string:
-			it = it.FindChildByKey(part)
+			it = it.findChildByKey(part)
 		case int:
-			it = it.FindChildByIndex(part)
+			it = it.findChildByIndex(part)
 		}
 	}
 	return it
 }
 
-func (n *Node) FindChildByKey(key string) *Node {
-	it := n.Next
+func (n *Node) findChildByKey(key string) *Node {
+	var it *Node
+	if n.Collapsed != nil {
+		it = n.Collapsed
+	} else {
+		it = n.Next
+	}
 	for it != nil && it != n.End {
 		if it.Key != "" {
 			k, err := strconv.Unquote(it.Key)
 			if err != nil {
-				return nil
+				continue
 			}
 			if k == key {
 				return it
@@ -218,8 +223,14 @@ func (n *Node) FindChildByKey(key string) *Node {
 	return nil
 }
 
-func (n *Node) FindChildByIndex(index int) *Node {
-	for at := n.Next; at != nil && at != n.End; {
+func (n *Node) findChildByIndex(index int) *Node {
+	var at *Node
+	if n.Collapsed != nil {
+		at = n.Collapsed
+	} else {
+		at = n.Next
+	}
+	for at != nil && at != n.End {
 		if at.Index == index {
 			return at
 		}
@@ -257,7 +268,7 @@ func (n *Node) Children() ([]string, []*Node) {
 
 	for it != nil && it != n.End {
 		if it.Key != "" {
-			key := string(it.Key)
+			key := it.Key
 			unquoted, err := strconv.Unquote(key)
 			if err == nil {
 				key = unquoted
@@ -341,6 +352,18 @@ func (n *Node) Paths(paths *[]string, nodes *[]*Node) {
 			} else {
 				it = it.Next
 			}
+		}
+	}
+}
+
+func (n *Node) ForEach(cb func(*Node)) {
+	it := n.Next
+	for it != nil && it != n.End {
+		cb(it)
+		if it.HasChildren() {
+			it = it.End.Next
+		} else {
+			it = it.Next
 		}
 	}
 }

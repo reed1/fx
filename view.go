@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/antonmedv/fx/internal/ident"
 	. "github.com/antonmedv/fx/internal/jsonx"
 	"github.com/antonmedv/fx/internal/theme"
 	"github.com/antonmedv/fx/internal/utils"
@@ -48,8 +49,8 @@ func (m *model) View() string {
 			screen = append(screen, ' ', ' ')
 		}
 
-		for ident := 0; ident < int(n.Depth); ident++ {
-			screen = append(screen, ' ', ' ')
+		for i := 0; i < int(n.Depth); i++ {
+			screen = append(screen, ident.IdentBytes...)
 		}
 
 		isSelected := m.cursor == lineNumber
@@ -66,24 +67,17 @@ func (m *model) View() string {
 
 		isRef := false
 		isRefSelected := false
-		var isRefValue string
 
 		if n.Key != "" {
 			screen = append(screen, m.prettyKey(n, isSelected)...)
 			screen = append(screen, theme.Colon...)
 
-			isRefValue, isRef = isRefNode(n)
+			_, isRef = isRefNode(n)
 			isRefSelected = isRef && isSelected
 			isSelected = false // don't highlight the key's value
 		}
 
-		if isRef {
-			screen = append(screen, theme.CurrentTheme.String("\"")...)
-			screen = append(screen, theme.CurrentTheme.Ref(isRefValue)...)
-			screen = append(screen, theme.CurrentTheme.String("\"")...)
-		} else {
-			screen = append(screen, m.prettyPrint(n, isSelected)...)
-		}
+		screen = append(screen, m.prettyPrint(n, isSelected, isRef)...)
 
 		if n.IsCollapsed() {
 			if n.Kind == Object {
@@ -176,7 +170,7 @@ func (m *model) View() string {
 
 	if m.yank {
 		screen = append(screen, '\n')
-		screen = append(screen, []byte("(y)value  (p)path  (k)key")...)
+		screen = append(screen, []byte("(y)value  (p)path  (k)key  (b)key+value")...)
 	} else if m.showShowSelector {
 		screen = append(screen, '\n')
 		screen = append(screen, []byte("(s)sizes  (l)line numbers")...)

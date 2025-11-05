@@ -2,6 +2,7 @@ package complete
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,25 +11,20 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/goccy/go-yaml"
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/antonmedv/fx/internal/engine"
+	"github.com/antonmedv/fx/internal/jsonx"
 	"github.com/antonmedv/fx/internal/shlex"
 )
 
-type pair struct {
-	display string
-	value   string
+type Reply struct {
+	Display string
+	Value   string
+	Type    string // "file" for files, others optional
 }
 
-var flags = []pair{
-	{"--help", "--help"},
-	{"--raw", "--raw"},
-	{"--slurp", "--slurp"},
-	{"--themes", "--themes"},
-	{"--version", "--version"},
-	{"--yaml", "--yaml"},
-	{"--strict", "--strict"},
-}
+var Flags []Reply
 
 //go:embed complete.bash
 var Bash string
@@ -66,7 +62,7 @@ func Complete() bool {
 
 func doComplete(compLine string, compWord string, withDisplay bool) {
 	if strings.HasPrefix(compWord, "-") {
-		compReply(filterReply(flags, compWord), withDisplay)
+		compReply(filterReply(Flags, compWord), withDisplay)
 		return
 	}
 
@@ -78,14 +74,17 @@ func doComplete(compLine string, compWord string, withDisplay bool) {
 	compWord = shlex.Parse(compWord)
 
 	var flagYaml bool
+	var flagToml bool
 	for _, arg := range args {
 		if arg == "--yaml" {
 			flagYaml = true
-			break
+		}
+		if arg == "--toml" {
+			flagToml = true
 		}
 	}
 
-	// Remove flags from args.
+	// Remove Flags from args.
 	args = filterArgs(args)
 
 	isSecondArgIsFile := false
@@ -106,14 +105,18 @@ func doComplete(compLine string, compWord string, withDisplay bool) {
 		isSecondArgIsFile = isFile(args[1])
 	}
 
-	var reply []pair
+	var reply []Reply
 
 	if isSecondArgIsFile {
 		file := args[1]
 
 		hasYamlExt, _ := regexp.MatchString(`(?i)\.ya?ml$`, file)
+		hasTomlExt, _ := regexp.MatchString(`(?i)\.toml$`, file)
 		if !flagYaml && hasYamlExt {
 			flagYaml = true
+		}
+		if !flagToml && hasTomlExt {
+			flagToml = true
 		}
 
 		if strings.HasPrefix(file, "~") {
@@ -128,21 +131,29 @@ func doComplete(compLine string, compWord string, withDisplay bool) {
 			return
 		}
 
-		input = append(input, '\n')
-
-		// If input is bigger than 100MB, skip completion.
-		if len(input) > 100*1024*1024 {
-			return
-		}
-
 		if flagYaml {
 			input, err = yaml.YAMLToJSON(input)
 			if err != nil {
 				return
 			}
+		} else if flagToml {
+			var v any
+			if err := toml.Unmarshal(input, &v); err != nil {
+				return
+			}
+			b, err := json.Marshal(v)
+			if err != nil {
+				return
+			}
+			input = b
 		}
 
-		reply = append(reply, keysComplete(input, args, compWord)...)
+		node, err := jsonx.Parse(input)
+		if err != nil {
+			return
+		}
+
+		reply = append(reply, keysComplete(node, args, compWord)...)
 	}
 
 	reply = filterReply(reply, compWord)
@@ -158,7 +169,7 @@ func doComplete(compLine string, compWord string, withDisplay bool) {
 	}
 }
 
-func globalsComplete() []pair {
+func globalsComplete() []Reply {
 	var code strings.Builder
 	code.WriteString(prelude)
 	code.WriteString(engine.Stdlib)
@@ -171,11 +182,12 @@ func globalsComplete() []pair {
 	}
 
 	if array, ok := value.Export().([]any); ok {
-		var reply []pair
+		var reply []Reply
 		for _, key := range array {
-			reply = append(reply, pair{
-				display: key.(string),
-				value:   key.(string),
+			reply = append(reply, Reply{
+				Display: key.(string),
+				Value:   key.(string),
+				Type:    "global",
 			})
 		}
 		return reply
@@ -183,7 +195,7 @@ func globalsComplete() []pair {
 	return nil
 }
 
-func keysComplete(input []byte, args []string, compWord string) []pair {
+func keysComplete(input *jsonx.Node, args []string, compWord string) []Reply {
 	args = args[2:] // Drop binary & file from the args.
 
 	if compWord == "" {
@@ -201,8 +213,6 @@ func keysComplete(input []byte, args []string, compWord string) []pair {
 	var code strings.Builder
 	code.WriteString(prelude)
 	code.WriteString(engine.Stdlib)
-	code.WriteString("let json = ")
-	code.Write(input)
 	for i, arg := range args {
 		if arg == "" { // After dropTail, we can have empty strings.
 			continue
@@ -212,6 +222,9 @@ func keysComplete(input []byte, args []string, compWord string) []pair {
 	code.WriteString("\n__keys\n")
 
 	vm := goja.New()
+	if err := vm.Set("json", input.ToValue(vm)); err != nil {
+		return nil
+	}
 	value, err := vm.RunString(code.String())
 	if err != nil {
 		return nil
@@ -219,11 +232,13 @@ func keysComplete(input []byte, args []string, compWord string) []pair {
 
 	if array, ok := value.Export().([]interface{}); ok {
 		prefix := dropTail(compWord)
-		var reply []pair
+		var reply []Reply
 		for _, key := range array {
-			reply = append(reply, pair{
-				display: "." + key.(string),
-				value:   join(prefix, key.(string)),
+			k := key.(string)
+			reply = append(reply, Reply{
+				Display: join("", k),
+				Value:   join(prefix, k),
+				Type:    "key",
 			})
 		}
 		return reply
@@ -231,7 +246,7 @@ func keysComplete(input []byte, args []string, compWord string) []pair {
 	return nil
 }
 
-var alphaRe = regexp.MustCompile(`^[\w$]+$`)
+var alphaRe = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 
 func join(prefix, key string) string {
 	if alphaRe.MatchString(key) {
@@ -248,8 +263,8 @@ func filterArgs(args []string) []string {
 	filtered := make([]string, 0, len(args))
 	for _, arg := range args {
 		found := false
-		for _, flag := range flags {
-			if arg == flag.value {
+		for _, flag := range Flags {
+			if arg == flag.Value {
 				found = true
 				break
 			}
@@ -261,7 +276,7 @@ func filterArgs(args []string) []string {
 	return filtered
 }
 
-func fileComplete(compWord string) []pair {
+func fileComplete(compWord string) []Reply {
 	original := compWord
 
 	// Step 1: Expand ~ to home directory
@@ -293,7 +308,7 @@ func fileComplete(compWord string) []pair {
 	}
 
 	// Step 4: Format matches
-	var matches []pair
+	var matches []Reply
 	for _, match := range files {
 		if match == "." || match == ".." {
 			continue
@@ -325,9 +340,10 @@ func fileComplete(compWord string) []pair {
 			}
 		}
 
-		matches = append(matches, pair{
-			display: filepath.Base(suggestion) + dirSuffix,
-			value:   suggestion,
+		matches = append(matches, Reply{
+			Display: filepath.Base(suggestion) + dirSuffix,
+			Value:   suggestion,
+			Type:    "file",
 		})
 	}
 

@@ -28,6 +28,7 @@ type KeyMap struct {
 	ToggleWrap          key.Binding
 	ShowSelector        key.Binding
 	Yank                key.Binding
+	Delete              key.Binding
 	CommandLine         key.Binding
 	Search              key.Binding
 	SearchNext          key.Binding
@@ -62,11 +63,11 @@ func init() {
 			key.WithHelp("pgup, b", "page up"),
 		),
 		HalfPageUp: key.NewBinding(
-			key.WithKeys("u", "ctrl+u"),
+			key.WithKeys("ctrl+u"),
 			key.WithHelp("", "half page up"),
 		),
 		HalfPageDown: key.NewBinding(
-			key.WithKeys("d", "ctrl+d"),
+			key.WithKeys("ctrl+d"),
 			key.WithHelp("", "half page down"),
 		),
 		GotoTop: key.NewBinding(
@@ -145,6 +146,10 @@ func init() {
 			key.WithKeys("y"),
 			key.WithHelp("", "yank/copy"),
 		),
+		Delete: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("", "delete node"),
+		),
 		CommandLine: key.NewBinding(
 			key.WithKeys(":"),
 			key.WithHelp("", "open command line"),
@@ -197,6 +202,7 @@ var (
 	yankValueV      = key.NewBinding(key.WithKeys("v"))
 	yankKey         = key.NewBinding(key.WithKeys("k"))
 	yankPath        = key.NewBinding(key.WithKeys("p"))
+	yankKeyValue    = key.NewBinding(key.WithKeys("b"))
 	arrowUp         = key.NewBinding(key.WithKeys("up"))
 	arrowDown       = key.NewBinding(key.WithKeys("down"))
 	showSizes       = key.NewBinding(key.WithKeys("s"))
