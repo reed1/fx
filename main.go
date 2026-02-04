@@ -55,6 +55,7 @@ var flags = []string{
 	"--toml",
 	"--strict",
 	"--no-inline",
+	"--print-keybindings",
 }
 
 func init() {
@@ -106,6 +107,9 @@ func main() {
 			return
 		case "--export-themes":
 			theme.ExportThemes()
+			return
+		case "--print-keybindings":
+			printKeybindingsJSON(keyMap)
 			return
 		case "--yaml":
 			flagYaml = true

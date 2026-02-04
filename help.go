@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -92,6 +93,29 @@ func keyMapInfo(keyMap KeyMap, style lipgloss.Style) []string {
 	)
 
 	return strings.Split(style.Render(content), "\n")
+}
+
+type keybindingEntry struct {
+	Keys        []string `json:"keys"`
+	Description string   `json:"description"`
+}
+
+func printKeybindingsJSON(keyMap KeyMap) {
+	v := reflect.ValueOf(keyMap)
+	t := v.Type()
+	fields := reflect.VisibleFields(t)
+
+	result := make(map[string]keybindingEntry)
+	for i := range fields {
+		k := v.Field(i).Interface().(key.Binding)
+		result[fields[i].Name] = keybindingEntry{
+			Keys:        k.Keys(),
+			Description: k.Help().Desc,
+		}
+	}
+
+	output, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(output))
 }
 
 func exit() {

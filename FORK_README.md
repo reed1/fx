@@ -39,12 +39,42 @@ Pressing `T` while on the `"data"` value will parse and open:
 }
 ```
 
-### 2. Search Input Auto-Clear
+### 2. Print Keybindings as JSON (Flag: `--print-keybindings`)
+
+Added a CLI flag to output all keybindings in JSON format.
+
+**Use Case:** Useful for scripting, documentation, or quickly checking what keys do what without launching the TUI.
+
+**How it works:**
+```bash
+fx --print-keybindings
+```
+
+**Output format:**
+```json
+{
+  "Quit": {
+    "keys": ["q", "ctrl+c", "esc"],
+    "description": "exit program"
+  },
+  "Down": {
+    "keys": ["down", "j"],
+    "description": "down"
+  },
+  ...
+}
+```
+
+**Implementation:**
+- Added `--keybindings` flag in `main.go`
+- Added `printKeybindingsJSON()` function in `help.go`
+
+### 3. Search Input Auto-Clear
 
 Modified search behavior to automatically clear the input when entering search mode, instead of retaining the previous search value.
 
 **Implementation:**
-- Modified `main.go` to clear search input value when entering search mode (1 line addition)
+- Modified `main.go` to clear search input value when entering search mode
 
 ## Upstream
 
