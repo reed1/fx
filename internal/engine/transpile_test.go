@@ -13,8 +13,8 @@ func TestTranspile(t *testing.T) {
 		{".foo", "x.foo"},
 		{".[0]", "x[0]"},
 		{"foo", "foo"},
-		{"@.baz", "x.map((x, i) => apply(x.baz, x, i))"},
-		{"?.foo > 42", "x.filter((x, i) => apply(x.foo > 42, x, i))"},
+		{"@.baz", "map((x, i) => apply(x.baz, x, i))"},
+		{"?.foo > 42", "filter((x, i) => apply(x.foo > 42, x, i))"},
 		{".foo[].bar[]", "(x => x.foo.flatMap(x => x.bar.flatMap(x => x)))(x)"},
 	}
 	for _, tt := range tests {

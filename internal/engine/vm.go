@@ -12,6 +12,11 @@ import (
 // FilePath is the file being processed, empty if stdin.
 var FilePath string
 
+// ExitError is used by exit() to signal a specific exit code.
+type ExitError struct {
+	Code int
+}
+
 func NewVM(writeOut func(string)) *goja.Runtime {
 	vm := goja.New()
 
@@ -25,6 +30,9 @@ func NewVM(writeOut func(string)) *goja.Runtime {
 	if err := vm.Set("__save__", func(json string) error {
 		if FilePath == "" {
 			return fmt.Errorf("specify a file as the first argument to be able to save: fx file.json ")
+		}
+		if info, err := os.Lstat(FilePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("cannot save to a symbolic link: %s", FilePath)
 		}
 		if err := os.WriteFile(FilePath, []byte(json), 0644); err != nil {
 			return err
@@ -72,6 +80,12 @@ func NewVM(writeOut func(string)) *goja.Runtime {
 			return ""
 		}
 		return string(b)
+	}); err != nil {
+		panic(err)
+	}
+
+	if err := vm.Set("__exit__", func(code int) {
+		panic(ExitError{Code: code})
 	}); err != nil {
 		panic(err)
 	}

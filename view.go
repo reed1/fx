@@ -18,11 +18,14 @@ func (m *model) View() string {
 	}
 
 	if m.showHelp {
-		statusBar := flex(m.termWidth, ": press q or ? to close help", "")
-		return m.help.View() + "\n" + theme.CurrentTheme.StatusBar(statusBar)
+		return m.help.View()
 	}
 
 	if m.showPreview {
+		searchBar := m.previewSearchStatusBar()
+		if searchBar != "" {
+			return m.preview.View() + "\n" + searchBar
+		}
 		statusBar := flex(m.termWidth, m.cursorPath(), m.fileName)
 		return m.preview.View() + "\n" + theme.CurrentTheme.StatusBar(statusBar)
 	}
@@ -110,10 +113,22 @@ func (m *model) View() string {
 			screen = append(screen, theme.Comma...)
 		}
 
-		if m.showSizes && (n.Kind == Array || n.Kind == Object) {
-			if n.IsCollapsed() || n.Size > 1 {
-				screen = append(screen, theme.CurrentTheme.Size(fmt.Sprintf(" |%d|", n.Size))...)
+		if m.showSizes && n.Size > 0 {
+			var w string
+			if n.Size == 1 {
+				if n.Kind == Array {
+					w = "item"
+				} else if n.Kind == Object {
+					w = "key"
+				}
+			} else {
+				if n.Kind == Array {
+					w = "items"
+				} else if n.Kind == Object {
+					w = "keys"
+				}
 			}
+			screen = append(screen, theme.CurrentTheme.Size(fmt.Sprintf(" (%d %s)", n.Size, w))...)
 		}
 
 		if isRefSelected {
@@ -147,8 +162,6 @@ func (m *model) View() string {
 			matchedStr = append(matchedStr, theme.CurrentTheme.StatusBar(strings.Repeat(" ", repeatCount))...)
 		}
 		screen = append(screen, matchedStr...)
-	} else if m.digInput.Focused() {
-		screen = append(screen, m.digInput.View()...)
 	} else {
 		statusBarWidth := m.termWidth
 		var indicator string
@@ -190,7 +203,10 @@ func (m *model) View() string {
 		if ci {
 			re += "i"
 		}
-		if m.search.err != nil {
+		if m.searching {
+			status := fmt.Sprintf("%s searching...", m.spinner.View())
+			screen = append(screen, flex(m.termWidth, re, status)...)
+		} else if m.search.err != nil {
 			screen = append(screen, flex(m.termWidth, re, m.search.err.Error())...)
 		} else if len(m.search.results) == 0 {
 			screen = append(screen, flex(m.termWidth, re, "not found")...)

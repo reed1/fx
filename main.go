@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -97,7 +96,7 @@ func main() {
 		}
 		switch arg {
 		case "-h", "--help":
-			fmt.Println(usage(keyMap))
+			fmt.Println(usage())
 			return
 		case "-v", "-V", "--version":
 			fmt.Println(version)
@@ -168,7 +167,7 @@ func main() {
 	if stdinIsTty {
 		if len(args) == 0 {
 			// $ fx
-			fmt.Println(usage(keyMap))
+			fmt.Println(usage())
 			return
 		} else {
 			// $ fx file.json arg*
@@ -229,15 +228,6 @@ func main() {
 		return
 	}
 
-	digInput := textinput.New()
-	digInput.Prompt = ""
-	digInput.TextStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("7")).
-		Foreground(lipgloss.Color("0"))
-	digInput.Cursor.Style = lipgloss.NewStyle().
-		Background(lipgloss.Color("15")).
-		Foreground(lipgloss.Color("0"))
-
 	commandInput := textinput.New()
 	commandInput.Prompt = ":"
 
@@ -246,6 +236,9 @@ func main() {
 
 	gotoSymbolInput := textinput.New()
 	gotoSymbolInput.Prompt = "@"
+
+	previewSearchInput := textinput.New()
+	previewSearchInput.Prompt = "/"
 
 	spinnerModel := spinner.New()
 	spinnerModel.Spinner = spinner.MiniDot
@@ -268,20 +261,20 @@ func main() {
 	}
 
 	m := &model{
-		suspending:      false,
-		showCursor:      true,
-		wrap:            true,
-		collapsed:       collapsed,
-		showSizes:       showSizes,
-		showLineNumbers: showLineNumbers,
-		fileName:        fileName,
-		digInput:        digInput,
-		gotoSymbolInput: gotoSymbolInput,
-		commandInput:    commandInput,
-		searchInput:     searchInput,
-		search:          newSearch(),
-		searchCache:     newSearchCache(50), // Cache up to 50 search queries
-		spinner:         spinnerModel,
+		suspending:          false,
+		showCursor:          true,
+		wrap:                true,
+		collapsed:           collapsed,
+		showSizes:           showSizes,
+		showLineNumbers:     showLineNumbers,
+		fileName:            fileName,
+		gotoSymbolInput:     gotoSymbolInput,
+		commandInput:        commandInput,
+		searchInput:         searchInput,
+		search:              newSearch(),
+		previewSearchInput:  previewSearchInput,
+		previewSearchCursor: -1,
+		spinner:             spinnerModel,
 	}
 
 	lipgloss.SetColorProfile(theme.TermOutput.ColorProfile())
@@ -351,17 +344,22 @@ type model struct {
 	showLineNumbers       bool
 	totalLines            int
 	fileName              string
-	digInput              textinput.Model
 	gotoSymbolInput       textinput.Model
 	commandInput          textinput.Model
 	searchInput           textinput.Model
 	search                *search
-	searchCache           *searchCache
+	searching             bool          // search in progress
+	searchCancel          chan struct{} // cancel channel for search
+	searchID              uint64        // increments with each search to detect stale results
 	yank                  bool
 	showHelp              bool
 	help                  viewport.Model
 	showPreview           bool
 	preview               viewport.Model
+	previewValue          string
+	previewSearchInput    textinput.Model
+	previewSearchResults  []int
+	previewSearchCursor   int
 	printOnExit           bool
 	printErrorOnExit      error
 	spinner               spinner.Model
@@ -388,13 +386,23 @@ type errorMsg struct {
 
 type eofMsg struct{}
 
+type searchResultMsg struct {
+	id     uint64
+	query  string
+	search *search
+}
+
+type searchCancelledMsg struct {
+	id uint64
+}
+
 func (m *model) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if msg, ok := msg.(tea.WindowSizeMsg); ok {
-		oldTermWidth := m.termWidth
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
 		m.help.Width = m.termWidth
@@ -402,22 +410,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.Width = m.termWidth
 		m.preview.Height = m.termHeight - 1
 		Wrap(m.top, m.viewWidth())
-		// Only invalidate cache if terminal width changed and wrapping is enabled
-		if oldTermWidth != m.termWidth && m.wrap {
-			m.searchCache.invalidate()
-		}
 		m.redoSearch()
-	}
 
-	if m.showHelp {
-		return m.handleHelpKey(msg)
-	}
-
-	if m.showPreview {
-		return m.handlePreviewKey(msg)
-	}
-
-	switch msg := msg.(type) {
 	case eofMsg:
 		m.eof = true
 		return m, nil
@@ -427,9 +421,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case nodeMsg:
-		// Invalidate search cache when new data arrives
-		m.searchCache.invalidate()
-
 		if m.wrap {
 			Wrap(msg.node, m.viewWidth())
 		}
@@ -458,12 +449,46 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if !m.eof {
+		if !m.eof || m.searching {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
 
+	case searchResultMsg:
+		if msg.id != m.searchID {
+			return m, nil
+		}
+		m.searching = false
+		m.searchCancel = nil
+		if msg.search != nil {
+			m.search = msg.search
+			m.selectSearchResult(0)
+		}
+		return m, nil
+
+	case searchCancelledMsg:
+		if msg.id != m.searchID {
+			return m, nil
+		}
+		m.searching = false
+		m.searchCancel = nil
+		return m, nil
+
+	case tea.ResumeMsg:
+		m.suspending = false
+		return m, nil
+	}
+
+	if m.showHelp {
+		return m.handleHelpKey(msg)
+	}
+
+	if m.showPreview {
+		return m.handlePreviewKey(msg)
+	}
+
+	switch msg := msg.(type) {
 	case tea.MouseMsg:
 		m.handlePendingDelete(msg)
 
@@ -475,7 +500,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.down()
 
 		case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
-			m.digInput.Blur()
 			m.showCursor = true
 			if msg.Y < m.viewHeight() {
 				if m.cursor == msg.Y {
@@ -509,14 +533,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case tea.ResumeMsg:
-		m.suspending = false
-		return m, nil
-
 	case tea.KeyMsg:
-		if m.digInput.Focused() {
-			return m.handleDigKey(msg)
-		}
 		if m.commandInput.Focused() {
 			return m.handleGotoLineKey(msg)
 		}
@@ -537,92 +554,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) handleDigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	switch {
-	case key.Matches(msg, arrowUp):
-		m.up()
-		m.digInput.SetValue(m.cursorPath())
-		m.digInput.CursorEnd()
-
-	case key.Matches(msg, arrowDown):
-		m.down()
-		m.digInput.SetValue(m.cursorPath())
-		m.digInput.CursorEnd()
-
-	case msg.Type == tea.KeyEscape:
-		m.digInput.Blur()
-
-	case msg.Type == tea.KeyTab:
-		m.digInput.SetValue(m.cursorPath())
-		m.digInput.CursorEnd()
-
-	case msg.Type == tea.KeyEnter:
-		m.digInput.Blur()
-		digPath, ok := jsonpath.Split(m.digInput.Value())
-		if ok {
-			n := m.findByPath(digPath)
-			if n != nil {
-				m.selectNode(n)
-			}
-		}
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+w"))):
-		digPath, ok := jsonpath.Split(m.digInput.Value())
-		if ok {
-			if len(digPath) > 0 {
-				digPath = digPath[:len(digPath)-1]
-			}
-			n := m.findByPath(digPath)
-			if n != nil {
-				m.selectNode(n)
-				m.digInput.SetValue(m.cursorPath())
-				m.digInput.CursorEnd()
-			}
-		}
-
-	case key.Matches(msg, textinput.DefaultKeyMap.WordBackward):
-		value := m.digInput.Value()
-		pth, ok := jsonpath.Split(value[0:m.digInput.Position()])
-		if ok {
-			if len(pth) > 0 {
-				pth = pth[:len(pth)-1]
-				m.digInput.SetCursor(len(jsonpath.Join(pth)))
-			} else {
-				m.digInput.CursorStart()
-			}
-		}
-
-	case key.Matches(msg, textinput.DefaultKeyMap.WordForward):
-		value := m.digInput.Value()
-		fullPath, ok1 := jsonpath.Split(value)
-		pth, ok2 := jsonpath.Split(value[0:m.digInput.Position()])
-		if ok1 && ok2 {
-			if len(pth) < len(fullPath) {
-				pth = append(pth, fullPath[len(pth)])
-				m.digInput.SetCursor(len(jsonpath.Join(pth)))
-			} else {
-				m.digInput.CursorEnd()
-			}
-		}
-
-	default:
-		if key.Matches(msg, key.NewBinding(key.WithKeys("."))) {
-			if m.digInput.Position() == len(m.digInput.Value()) {
-				m.digInput.SetValue(m.cursorPath())
-				m.digInput.CursorEnd()
-			}
-		}
-
-		m.digInput, cmd = m.digInput.Update(msg)
-		n := m.dig(m.digInput.Value())
-		if n != nil {
-			m.selectNode(n)
-		}
-	}
-	return m, cmd
-}
-
 func (m *model) handleHelpKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if msg, ok := msg.(tea.KeyMsg); ok {
@@ -632,22 +563,6 @@ func (m *model) handleHelpKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.help, cmd = m.help.Update(msg)
-	return m, cmd
-}
-
-func (m *model) handlePreviewKey(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	if msg, ok := msg.(tea.KeyMsg); ok {
-		switch {
-		case key.Matches(msg, keyMap.Quit),
-			key.Matches(msg, keyMap.Preview):
-			m.showPreview = false
-
-		case key.Matches(msg, keyMap.Print):
-			return m, m.print()
-		}
-	}
-	m.preview, cmd = m.preview.Update(msg)
 	return m, cmd
 }
 
@@ -675,15 +590,17 @@ func (m *model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch {
 	case msg.Type == tea.KeyEscape:
+		m.cancelSearch()
+		m.search = newSearch()
 		m.searchInput.Blur()
 		m.searchInput.SetValue("")
-		m.doSearch("")
 		m.showCursor = true
 
 	case msg.Type == tea.KeyEnter:
 		m.searchInput.Blur()
-		m.doSearch(m.searchInput.Value())
-		m.recordHistory()
+		m.cancelSearch()
+		m.search = newSearch()
+		return m, m.doSearch(m.searchInput.Value())
 
 	default:
 		m.searchInput, cmd = m.searchInput.Update(msg)
@@ -960,7 +877,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			DropWrapAll(m.top)
 		}
-		m.searchCache.invalidate()
 		if at.Chunk != "" && at.Value == "" {
 			at = at.Parent
 		}
@@ -975,18 +891,22 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keyMap.Preview):
 		m.showPreview = true
-		content := ""
 		value := m.cursorValue()
+		var view string
 		if decodedValue, err := base64.StdEncoding.DecodeString(value); err == nil {
 			img, err := utils.DrawImage(bytes.NewReader(decodedValue), m.termWidth, m.termHeight)
 			if err == nil {
-				content = strings.TrimRight(img, "\n")
+				view = strings.TrimRight(img, "\n")
 			}
 		}
-		if content == "" {
-			content = lipgloss.NewStyle().Width(m.termWidth).Render(value)
+		if view == "" {
+			view = lipgloss.NewStyle().Width(m.termWidth).Render(value)
 		}
-		m.preview.SetContent(content)
+		m.previewValue = value
+		m.previewSearchInput.SetValue("")
+		m.previewSearchResults = nil
+		m.previewSearchCursor = -1
+		m.preview.SetContent(view)
 		m.preview.GotoTop()
 
 	case key.Matches(msg, keyMap.Print):
@@ -994,22 +914,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keyMap.Open):
 		return m, m.open()
-
-	case key.Matches(msg, keyMap.Dig):
-		at, ok := m.cursorPointsTo()
-		if !ok {
-			return m, nil
-		}
-		if at.Kind == Err {
-			nextJson := at.FindNextNonErr()
-			if nextJson != nil {
-				m.selectNode(nextJson)
-			}
-		}
-		m.digInput.SetValue(m.cursorPath() + ".")
-		m.digInput.CursorEnd()
-		m.digInput.Width = m.termWidth - 1
-		m.digInput.Focus()
 
 	case key.Matches(msg, keyMap.GotoSymbol):
 		m.gotoSymbolInput.CursorEnd()
@@ -1485,111 +1389,6 @@ func (m *model) currentTopNode() *Node {
 		at = at.Parent
 	}
 	return at
-}
-
-func (m *model) doSearch(s string) {
-	if s == "" {
-		return
-	}
-
-	// Check cache first
-	if cachedSearch, _, found := m.searchCache.get(s); found {
-		m.search = cachedSearch
-		return
-	}
-
-	m.search = newSearch()
-
-	code, ci := regexCase(s)
-	if ci {
-		code = "(?i)" + code
-	}
-
-	re, err := regexp.Compile(code)
-	if err != nil {
-		m.search.err = err
-		return
-	}
-
-	n := m.top
-	searchIndex := 0
-	for n != nil {
-		if n.Key != "" {
-			indexes := re.FindAllStringIndex(n.Key, -1)
-			if len(indexes) > 0 {
-				for i, pair := range indexes {
-					m.search.results = append(m.search.results, n)
-					m.search.keys[n] = append(m.search.keys[n], match{start: pair[0], end: pair[1], index: searchIndex + i})
-				}
-				searchIndex += len(indexes)
-			}
-		}
-		indexes := re.FindAllStringIndex(n.Value, -1)
-		if len(indexes) > 0 {
-			for range indexes {
-				m.search.results = append(m.search.results, n)
-			}
-			if n.Chunk != "" {
-				// String can be split into chunks, so we need to map the indexes to the chunks.
-				chunks := []string{n.Chunk}
-				chunkNodes := []*Node{n}
-
-				it := n.Next
-				for it != nil {
-					chunkNodes = append(chunkNodes, it)
-					chunks = append(chunks, it.Chunk)
-					if it == n.ChunkEnd {
-						break
-					}
-					it = it.Next
-				}
-
-				chunkMatches := splitIndexesToChunks(chunks, indexes, searchIndex)
-				for i, matches := range chunkMatches {
-					m.search.values[chunkNodes[i]] = matches
-				}
-			} else {
-				for i, pair := range indexes {
-					m.search.values[n] = append(m.search.values[n], match{start: pair[0], end: pair[1], index: searchIndex + i})
-				}
-			}
-			searchIndex += len(indexes)
-		}
-
-		if n.IsCollapsed() {
-			n = n.Collapsed
-		} else {
-			n = n.Next
-		}
-	}
-
-	m.searchCache.put(s, re, m.search)
-
-	m.selectSearchResult(0)
-}
-
-func (m *model) selectSearchResult(i int) {
-	if len(m.search.results) == 0 {
-		return
-	}
-	if i < 0 {
-		i = len(m.search.results) - 1
-	}
-	if i >= len(m.search.results) {
-		i = 0
-	}
-	m.search.cursor = i
-	result := m.search.results[i]
-	m.selectNode(result)
-	m.showCursor = false
-}
-
-func (m *model) redoSearch() {
-	if m.searchInput.Value() != "" && len(m.search.results) > 0 {
-		cursor := m.search.cursor
-		m.doSearch(m.searchInput.Value())
-		m.selectSearchResult(cursor)
-	}
 }
 
 func (m *model) createKeysIndex() {

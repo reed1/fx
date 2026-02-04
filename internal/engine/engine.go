@@ -86,11 +86,7 @@ func Start(parser Parser, args []string, opts Options) int {
 
 	var code strings.Builder
 	code.WriteString(Stdlib)
-	code.WriteString("\nfunction __main__(json) {\n")
-	for i := range args {
-		code.WriteString(Transpile(args, i))
-	}
-	code.WriteString("  return json\n}\n")
+	code.WriteString(JS(args))
 
 	vm := NewVM(opts.WriteOut)
 	if _, err := vm.RunString(code.String()); err != nil {
@@ -129,7 +125,10 @@ func Start(parser Parser, args []string, opts Options) int {
 		}
 
 		input := node.ToValue(vm)
-		output, err := main(goja.Undefined(), input)
+		output, exitCode, err := callMain(main, input)
+		if exitCode >= 0 {
+			return exitCode
+		}
 		if err != nil {
 			opts.WriteErr(errorToString(err))
 			return 1
@@ -144,10 +143,25 @@ func Start(parser Parser, args []string, opts Options) int {
 	return 0
 }
 
+func callMain(main goja.Callable, input goja.Value) (output goja.Value, exitCode int, err error) {
+	exitCode = -1
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(ExitError); ok {
+				exitCode = e.Code
+			} else {
+				panic(r)
+			}
+		}
+	}()
+	output, err = main(goja.Undefined(), input)
+	return
+}
+
 func validateSyntax(args []string, i int) error {
 	var code strings.Builder
 	code.WriteString("\nfunction __main__(json) {\n")
-	code.WriteString(Transpile(args, i))
+	code.WriteString(Body(args, i))
 	code.WriteString("  return json\n}\n")
 
 	vm := goja.New()

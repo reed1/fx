@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/dop251/goja"
 	"github.com/goccy/go-yaml"
@@ -126,34 +127,50 @@ func doComplete(compLine string, compWord string, withDisplay bool) {
 			}
 		}
 
-		input, err := os.ReadFile(file)
-		if err != nil {
+		resultCh := make(chan []Reply, 1)
+
+		go func() {
+			input, err := os.ReadFile(file)
+			if err != nil {
+				resultCh <- []Reply{}
+				return
+			}
+
+			if flagYaml {
+				input, err = yaml.YAMLToJSON(input)
+				if err != nil {
+					resultCh <- []Reply{}
+					return
+				}
+			} else if flagToml {
+				var v any
+				if err := toml.Unmarshal(input, &v); err != nil {
+					resultCh <- []Reply{}
+					return
+				}
+				b, err := json.Marshal(v)
+				if err != nil {
+					resultCh <- []Reply{}
+					return
+				}
+				input = b
+			}
+
+			node, err := jsonx.Parse(input)
+			if err != nil {
+				resultCh <- []Reply{}
+				return
+			}
+
+			resultCh <- KeysComplete(node, args, compWord)
+		}()
+
+		select {
+		case result := <-resultCh:
+			reply = append(reply, result...)
+		case <-time.After(3 * time.Second):
 			return
 		}
-
-		if flagYaml {
-			input, err = yaml.YAMLToJSON(input)
-			if err != nil {
-				return
-			}
-		} else if flagToml {
-			var v any
-			if err := toml.Unmarshal(input, &v); err != nil {
-				return
-			}
-			b, err := json.Marshal(v)
-			if err != nil {
-				return
-			}
-			input = b
-		}
-
-		node, err := jsonx.Parse(input)
-		if err != nil {
-			return
-		}
-
-		reply = append(reply, keysComplete(node, args, compWord)...)
 	}
 
 	reply = filterReply(reply, compWord)
@@ -195,7 +212,7 @@ func globalsComplete() []Reply {
 	return nil
 }
 
-func keysComplete(input *jsonx.Node, args []string, compWord string) []Reply {
+func KeysComplete(input *jsonx.Node, args []string, compWord string) []Reply {
 	args = args[2:] // Drop binary & file from the args.
 
 	if compWord == "" {
@@ -213,13 +230,8 @@ func keysComplete(input *jsonx.Node, args []string, compWord string) []Reply {
 	var code strings.Builder
 	code.WriteString(prelude)
 	code.WriteString(engine.Stdlib)
-	for i, arg := range args {
-		if arg == "" { // After dropTail, we can have empty strings.
-			continue
-		}
-		code.WriteString(engine.Transpile(args, i))
-	}
-	code.WriteString("\n__keys\n")
+	code.WriteString(engine.JS(args))
+	code.WriteString("\n__main__(json)\n__keys\n")
 
 	vm := goja.New()
 	if err := vm.Set("json", input.ToValue(vm)); err != nil {

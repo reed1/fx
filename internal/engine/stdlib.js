@@ -16,11 +16,6 @@ const console = {
   },
 }
 
-const YAML = {
-  stringify: x => __yaml_stringify__(x),
-  parse: x => JSON.parse(__yaml_parse__(x)),
-}
-
 const skip = Symbol('skip')
 
 function apply(fn, ...args) {
@@ -45,21 +40,16 @@ function sort(x) {
   throw new Error(`Cannot sort ${typeof x}`)
 }
 
+function isFalsely(x) {
+  return x === false || x === null || x === undefined
+}
+
 function filter(fn) {
   return function (x) {
     if (Array.isArray(x)) {
-      return x.filter((v, i) => fn(v, i))
-    } else if (x !== null && typeof x === 'object') {
-      const result = {}
-      for (const [k, v] of Object.entries(x)) {
-        if (fn(v, k)) {
-          result[k] = v
-        }
-      }
-      return result
-    } else {
-      throw new Error(`Cannot filter ${typeof x}`)
+      return x.filter((v, i) => !isFalsely(fn(v, i)))
     }
+    return isFalsely(fn(x)) ? skip : x
   }
 }
 
@@ -67,15 +57,8 @@ function map(fn) {
   return function (x) {
     if (Array.isArray(x)) {
       return x.map((v, i) => fn(v, i))
-    } else if (x !== null && typeof x === 'object') {
-      const result = {}
-      for (const [k, v] of Object.entries(x)) {
-        result[k] = fn(v, k)
-      }
-      return result
-    } else {
-      throw new Error(`Cannot map over ${typeof x}`)
     }
+    return fn(x)
   }
 }
 
@@ -107,12 +90,26 @@ function sortBy(fn) {
   }
 }
 
+function sortKeys(x) {
+  if (Array.isArray(x)) {
+    return x.map(sortKeys)
+  }
+  if (typeof x === 'object' && x !== null) {
+    const sorted = {}
+    for (const key of Object.keys(x).sort()) {
+      sorted[key] = sortKeys(x[key])
+    }
+    return sorted
+  }
+  return x
+}
+
 function groupBy(keyFn) {
   return function (x) {
     const grouped = {}
     for (const item of x) {
       const key = typeof keyFn === 'function' ? keyFn(item) : item[keyFn]
-      if (!grouped.hasOwnProperty(key)) grouped[key] = []
+      if (!Object.prototype.hasOwnProperty.call(grouped, key)) grouped[key] = []
       grouped[key].push(item)
     }
     return grouped
@@ -167,6 +164,26 @@ function list(x) {
   throw new Error(`Cannot list ${typeof x}`)
 }
 
+function del(key) {
+  return function (x) {
+    if (Array.isArray(x)) {
+      const copy = [...x]
+      copy.splice(key, 1)
+      return copy
+    }
+    if (typeof x === 'object' && x !== null) {
+      const copy = {...x}
+      delete copy[key]
+      return copy
+    }
+    throw new Error(`Cannot delete key from ${typeof x}`)
+  }
+}
+
+function exit(code) {
+  __exit__(code)
+}
+
 function save(x) {
   if (typeof x === 'undefined') throw new Error('Cannot save undefined')
   __save__(__stringify__(x, null, 2))
@@ -179,4 +196,9 @@ function toBase64(x) {
 
 function fromBase64(x) {
   return __fromBase64__(x)
+}
+
+const YAML = {
+  stringify: x => __yaml_stringify__(x),
+  parse: x => JSON.parse(__yaml_parse__(x)),
 }

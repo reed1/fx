@@ -3,43 +3,42 @@ package main
 import "github.com/charmbracelet/bubbles/key"
 
 type KeyMap struct {
-	Quit                key.Binding
-	Suspend             key.Binding
-	PageDown            key.Binding
-	PageUp              key.Binding
-	HalfPageUp          key.Binding
-	HalfPageDown        key.Binding
-	GotoTop             key.Binding
-	GotoBottom          key.Binding
-	GotoSymbol          key.Binding
-	GotoRef             key.Binding
-	Down                key.Binding
-	Up                  key.Binding
-	Help                key.Binding
-	Expand              key.Binding
-	Collapse            key.Binding
-	ExpandRecursively   key.Binding
-	CollapseRecursively key.Binding
-	ExpandAll           key.Binding
-	CollapseAll         key.Binding
-	CollapseLevel       key.Binding
-	NextSibling         key.Binding
-	PrevSibling         key.Binding
-	ToggleWrap          key.Binding
-	ShowSelector        key.Binding
-	Yank                key.Binding
-	Delete              key.Binding
-	CommandLine         key.Binding
-	Search              key.Binding
-	SearchNext          key.Binding
-	SearchPrev          key.Binding
-	Preview             key.Binding
-	Print               key.Binding
-	Open                key.Binding
-	GoBack              key.Binding
-	GoForward           key.Binding
-	Dig                 key.Binding
-	ParseJSON           key.Binding
+	Up                  key.Binding `category:"Navigation"`
+	Down                key.Binding `category:"Navigation"`
+	PageUp              key.Binding `category:"Navigation"`
+	PageDown            key.Binding `category:"Navigation"`
+	HalfPageUp          key.Binding `category:"Navigation"`
+	HalfPageDown        key.Binding `category:"Navigation"`
+	GotoTop             key.Binding `category:"Navigation"`
+	GotoBottom          key.Binding `category:"Navigation"`
+	NextSibling         key.Binding `category:"Navigation"`
+	PrevSibling         key.Binding `category:"Navigation"`
+	Expand              key.Binding `category:"Expand / Collapse"`
+	Collapse            key.Binding `category:"Expand / Collapse"`
+	ExpandRecursively   key.Binding `category:"Expand / Collapse"`
+	CollapseRecursively key.Binding `category:"Expand / Collapse"`
+	ExpandAll           key.Binding `category:"Expand / Collapse"`
+	CollapseAll         key.Binding `category:"Expand / Collapse"`
+	CollapseLevel       key.Binding `category:"Expand / Collapse"`
+	Search              key.Binding `category:"Search"`
+	SearchNext          key.Binding `category:"Search"`
+	SearchPrev          key.Binding `category:"Search"`
+	GotoSymbol          key.Binding `category:"Search"`
+	GotoRef             key.Binding `category:"Search"`
+	Yank                key.Binding `category:"Actions"`
+	Delete              key.Binding `category:"Actions"`
+	Preview             key.Binding `category:"Actions"`
+	Print               key.Binding `category:"Actions"`
+	Open                key.Binding `category:"Actions"`
+	ParseJSON           key.Binding `category:"Actions"`
+	ToggleWrap          key.Binding `category:"View"`
+	ShowSelector        key.Binding `category:"View"`
+	GoBack              key.Binding `category:"Navigation"`
+	GoForward           key.Binding `category:"Navigation"`
+	Help                key.Binding `category:"Other"`
+	CommandLine         key.Binding `category:"Other"`
+	Quit                key.Binding `category:"Other"`
+	Suspend             key.Binding `category:"Other"`
 }
 
 var keyMap KeyMap
@@ -168,11 +167,11 @@ func init() {
 		),
 		Preview: key.NewBinding(
 			key.WithKeys("p"),
-			key.WithHelp("", "preview"),
+			key.WithHelp("", "preview node"),
 		),
 		Print: key.NewBinding(
 			key.WithKeys("P"),
-			key.WithHelp("", "print"),
+			key.WithHelp("", "print to stdout"),
 		),
 		Open: key.NewBinding(
 			key.WithKeys("v"),
@@ -185,10 +184,6 @@ func init() {
 		GoForward: key.NewBinding(
 			key.WithKeys("]"),
 			key.WithHelp("", "go forward"),
-		),
-		Dig: key.NewBinding(
-			key.WithKeys("."),
-			key.WithHelp("", "dig"),
 		),
 		ParseJSON: key.NewBinding(
 			key.WithKeys("T"),

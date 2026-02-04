@@ -7,10 +7,25 @@ import (
 	"strings"
 )
 
-func Transpile(args []string, i int) string {
+func JS(args []string) string {
+	var code strings.Builder
+	code.WriteString("\nfunction __main__(json) {\n")
+	for i := range args {
+		if args[i] == "" {
+			// In autocomplete: after dropTail, we can have empty strings.
+			continue
+		}
+		code.WriteString(Body(args, i))
+	}
+	code.WriteString("\n  return json\n}\n")
+	return code.String()
+}
+
+func Body(args []string, i int) string {
 	jsCode := transpile(args[i])
 	snippet := formatErr(args, i, jsCode)
-	return fmt.Sprintf(`  try {
+	return fmt.Sprintf(`
+  try {
     json = apply((function () {
       const x = this
       return %s
@@ -19,6 +34,7 @@ func Transpile(args []string, i int) string {
     throw %s
   }
 
+  if (json === skip) return skip
 `, jsCode, strconv.Quote(snippet)+" + e.toString()")
 }
 
@@ -49,12 +65,12 @@ func transpile(code string) string {
 
 	if reAt.MatchString(code) {
 		jsCode := transpile(code[1:])
-		return fmt.Sprintf(`x.map((x, i) => apply(%s, x, i))`, jsCode)
+		return fmt.Sprintf(`map((x, i) => apply(%s, x, i))`, jsCode)
 	}
 
 	if reFilter.MatchString(code) {
 		jsCode := transpile(code[1:])
-		return fmt.Sprintf(`x.filter((x, i) => apply(%s, x, i))`, jsCode)
+		return fmt.Sprintf(`filter((x, i) => apply(%s, x, i))`, jsCode)
 	}
 
 	return code
